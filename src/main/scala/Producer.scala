@@ -1,17 +1,23 @@
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions._
+import org.apache.spark.SparkConf
+import org.apache.spark.streaming.{Seconds, StreamingContext}
 
 object Producer
 {
   def main(args: Array[String]): Unit = {
 
-    val spark = SparkSession
-    .builder
-    .appName("SparkStreaming")
-    .config("spark.master", "local")
-    .getOrCreate()
+    val conf = new SparkConf().setMaster("local[2]").setAppName("streaming_simulator")
+    val ssc = new StreamingContext(conf, Seconds(1))
+    val lines = ssc.socketTextStream("localhost", 9999)
+    val words = lines.flatMap(_.split(" "))
 
-    import spark.implicits
+    val pairs = words.map(word => (word, 1))
+    val wordCounts = pairs.reduceByKey(_ + _)
+
+    // Print the first ten elements of each RDD generated in this DStream to the console
+    wordCounts.print()
+
+    ssc.start()             // Start the computation
+    ssc.awaitTermination()  // Wait for the computation to terminate
 
     println("Hello world ")
 
