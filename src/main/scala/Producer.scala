@@ -5,6 +5,6 @@ object Producer
   def main(args: Array[String]): Unit = {
     println("Hello world ")
 
-    val spark = SparkSession
+    val spark = SparkSession.
   }
 }
