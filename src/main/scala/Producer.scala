@@ -9,10 +9,10 @@ import java.io.File
 object Producer {
   def main(args: Array[String]): Unit = {
 
-    val file = new File("resources/HadoopResources")
-    System.setProperty("hadoop.home.dir", file.getAbsolutePath)
+    //to make the project run on windows you need this folder with winutils.ext and hadoop.dll to be linked
+    System.setProperty("hadoop.home.dir", "resources/hadoop")
 
-    val logFile = "data/all_data.csv"
+    val logFile = "source_data/all_data.csv"
 
     val spark = SparkSession.builder
       .appName("Producer")
@@ -34,12 +34,12 @@ object Producer {
     {
       val to_write = logData.limit(2000)
       // Écrire le DataFrame actuel au format CSV
-      println(s"writing to data/partition_${i}.csv")
+      println(s"writing to produced_data/partition_${i}.csv")
       to_write.write
         .format("csv")
         .options(options)
         .mode("overwrite")
-        .save(s"data/partition_${i}.csv")
+        .save(s"produced_data/partition_${i}.csv")
 
       // Supprimer les 1152 premières lignes du DataFrame
       logData = logData.except(to_write)
