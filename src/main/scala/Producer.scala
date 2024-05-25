@@ -2,9 +2,15 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.functions.count
 
+import java.io.File
+
+
 
 object Producer {
   def main(args: Array[String]): Unit = {
+
+    val file = new File("resources/HadoopResources")
+    System.setProperty("hadoop.home.dir", file.getAbsolutePath)
 
     val logFile = "data/all_data.csv"
 
@@ -24,7 +30,8 @@ object Producer {
 
     // println(number_of_partitions)
 
-    for (i <- 0 to number_of_partitions) {
+    for (i <- 0 to number_of_partitions)
+    {
       val to_write = logData.limit(2000)
       // Écrire le DataFrame actuel au format CSV
       println(s"writing to data/partition_${i}.csv")
