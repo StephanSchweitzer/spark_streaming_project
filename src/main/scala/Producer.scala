@@ -1,26 +1,44 @@
-import org.apache.spark.SparkConf
-import org.apache.spark.streaming.{Seconds, StreamingContext}
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.count
 
-object Producer
-{
+
+object Producer {
   def main(args: Array[String]): Unit = {
 
-    val conf = new SparkConf().setMaster("local[2]").setAppName("NetworkWordCount")
-    val ssc = new StreamingContext(conf, Seconds(1))
-    val lines = ssc.socketTextStream("localhost", 9999)
-    val words = lines.flatMap(_.split(" "))
+    val logFile = "data/all_data.csv"
 
-    val pairs = words.map(word => (word, 1))
-    val wordCounts = pairs.reduceByKey(_ + _)
+    val spark = SparkSession.builder
+      .appName("Producer")
+      .master("local[*]")
+      .getOrCreate()
 
-    // Print the first ten elements of each RDD generated in this DStream to the console
-    wordCounts.print()
+    spark.sparkContext.setLogLevel("WARN")
 
-    ssc.start()             // Start the computation
-    ssc.awaitTermination()  // Wait for the computation to terminate
+    val options = Map("delimiter"->",","header"->"true")
+    var logData = spark.read.options(options).csv(logFile).persist()
 
-    println("Hello world ")
+    println("number of lines in my df " + logData.count())
+    val number_of_partitions: Int = (logData.count()/2000).toInt
+    println("number of partitions =" + number_of_partitions)
 
+    // println(number_of_partitions)
+
+    for (i <- 0 to number_of_partitions) {
+      val to_write = logData.limit(2000)
+      // Écrire le DataFrame actuel au format CSV
+      println(s"writing to data/partition_${i}.csv")
+      to_write.write
+        .format("csv")
+        .options(options)
+        .mode("overwrite")
+        .save(s"data/partition_${i}.csv")
+
+      // Supprimer les 1152 premières lignes du DataFrame
+      logData = logData.except(to_write)
+      to_write.unpersist()
+      println("remain lines in df " + logData.count())
+      // Thread.sleep(5000)
+    }
   }
-
 }
