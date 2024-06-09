@@ -1,18 +1,21 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, BooleanType}
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.sql.streaming.StreamingQueryListener
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import java.net.URI
-
+import org.json4s._
+import org.json4s.jackson.Serialization
+import org.json4s.jackson.Serialization.write
+//implicit val formats: Formats = DefaultFormats
 
 
 object Consumer {
-      def main(args: Array[String]): Unit = {
+  implicit val formats: Formats = Serialization.formats(NoTypeHints)
+
+  def main(args: Array[String]): Unit = {
         val host = "localhost"
         val port = 9999
 
@@ -47,49 +50,93 @@ object Consumer {
 
         spark.sparkContext.setLogLevel("WARN")
 
+        spark.streams.addListener(new StreamingQueryListener {
+          override def onQueryStarted(event: StreamingQueryListener.QueryStartedEvent): Unit = {
+            println(s"Query started: ${event.id}")
+          }
 
-        val socketDF = spark.readStream
-          .format("socket")
-          .option("host", host)
-          .option("port", port)
-          .load()
+          override def onQueryProgress(event: StreamingQueryListener.QueryProgressEvent): Unit = {
+            println(s"Query made progress: ${event.progress}")
+            // Send progress data to Node.js server
+            wsClient.send(event.progress.json)
+          }
 
-        socketDF.isStreaming
-        socketDF.printSchema
+          override def onQueryTerminated(event: StreamingQueryListener.QueryTerminatedEvent): Unit = {
+            println(s"Query terminated: ${event.id}")
+          }
+        })
+
+//        val socketDF = spark.readStream
+//          .format("socket")
+//          .option("host", host)
+//          .option("port", port)
+//          .load()
+//
+//        socketDF.isStreaming
+//        socketDF.printSchema
 
         val csvDirectory = "produced_data"
         val hateSpeechSchema = new StructType().add("id", "integer").add("text", "string").add("hateful", "integer")
 
 
-//        val staticDF = spark.read
-//          .format("csv")
-//          .option("header", "true")
-//          .option("recursiveFileLookup", "true")
-//          .schema(hateSpeechSchema)
-//          .load(csvDirectory)
-//
-//        staticDF.show()
-
         val csvDF = spark.readStream
-          //.format("csv")
           .option("sep", ",")
           .option("header", "true")
           .schema(hateSpeechSchema)
           .option("recursiveFileLookup", "true")
-          //.load(csvDirectory)
           .csv(csvDirectory)
 
-        csvDF.printSchema()
+        import spark.implicits._
+
+        // Calculate percentage of hateful messages
+        val hatefulMessagesCount = csvDF.filter($"is_hateful" === true).count()
+        val totalMessagesCount = csvDF.count()
+        val hatefulMessagesPercentage = hatefulMessagesCount / totalMessagesCount * 100
+
+        val frequentHatefulUsers = csvDF.filter($"is_hateful" === 1)
+          .groupBy("user")
+          .count()
+          .orderBy($"count".desc)
+          .limit(5)
+
+        val mostRecentMessage = csvDF.orderBy($"timestamp".desc).limit(1)
+
+
+//        val query = csvDF.writeStream
+//          .outputMode("append")
+//          .format("console")
+//          .start()
 
         val query = csvDF.writeStream
-          .outputMode("append") // Use "append" for appending new rows as they arrive
-          .format("console") // Output to the console
+          .outputMode("append")
+          .foreachBatch { (batchDF, batchId) =>
+            val hatefulMessagesCount = batchDF.filter($"is_hateful" === true).count()
+            val totalMessagesCount = batchDF.count()
+            val hatefulMessagesPercentage = if (totalMessagesCount > 0) hatefulMessagesCount.toDouble / totalMessagesCount * 100 else 0.0
+
+            val frequentHatefulUsers = batchDF.filter($"is_hateful" === true)
+              .groupBy("user")
+              .count()
+              .orderBy($"count".desc)
+              .limit(5)
+              .collect()
+
+            val mostRecentMessage = batchDF.orderBy($"timestamp".desc).limit(1).collect()
+
+            val dataToSend = Map(
+              "hatefulMessagesPercentage" -> hatefulMessagesPercentage,
+              "frequentHatefulUsers" -> frequentHatefulUsers.map(row => row.getAs[String]("user") -> row.getAs[Long]("count")).toMap,
+              "mostRecentMessage" -> mostRecentMessage.map(row => row.getAs[String]("message")).headOption.getOrElse("No message")
+            )
+
+
+            wsClient.send(write(dataToSend))
+          }
           .start()
 
         query.awaitTermination()
-//
+
        import spark.implicits._
-//
 
 //
 //        // Split the lines into words
