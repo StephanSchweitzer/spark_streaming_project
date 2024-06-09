@@ -2,9 +2,6 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.functions.count
 
-import java.io.File
-
-
 
 object Producer {
   def main(args: Array[String]): Unit = {
@@ -39,7 +36,7 @@ object Producer {
         .format("csv")
         .options(options)
         .mode("overwrite")
-        .save(s"produced_data/partition_${i}.csv")
+        .save(s"produced_data/partition_${i}")
 
       // Supprimer les 1152 premières lignes du DataFrame
       logData = logData.except(to_write)
