@@ -8,6 +8,8 @@ lazy val root = (project in file("."))
       "org.apache.spark" %% "spark-core" % "3.3.2",
       "org.apache.spark" %% "spark-streaming" % "3.3.2",
       "org.apache.spark" %% "spark-sql" % "3.3.2",
-      "org.apache.hadoop" % "hadoop-client" % "3.3.2"
-    )
+      "org.apache.hadoop" % "hadoop-client" % "3.3.2",
+      "org.java-websocket" % "Java-WebSocket" % "1.5.2"
+
+)
   )

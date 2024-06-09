@@ -1,7 +1,13 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StructType
-
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, BooleanType}
+import org.apache.log4j.{Level, Logger}
+import org.apache.spark.sql.streaming.StreamingQueryListener
+import org.java_websocket.client.WebSocketClient
+import org.java_websocket.handshake.ServerHandshake
+import java.net.URI
 
 
 
@@ -12,8 +18,28 @@ object Consumer {
 
         //to make the project run on windows you need this folder with winutils.ext and hadoop.dll to be linked
         //System.setProperty("hadoop.home.dir", "resources/hadoop")
+        // WebSocket client to send data to Node.js server
 
-        val spark = SparkSession
+        val wsClient = new WebSocketClient(new URI("ws://localhost:3000")) {
+          override def onOpen(handshakedata: ServerHandshake): Unit = {
+            println("WebSocket connection opened")
+          }
+
+          override def onMessage(message: String): Unit = {
+            // No need to handle messages from the server
+          }
+
+          override def onClose(code: Int, reason: String, remote: Boolean): Unit = {
+            println(s"WebSocket connection closed: $reason")
+          }
+
+          override def onError(ex: Exception): Unit = {
+            ex.printStackTrace()
+          }
+        }
+        wsClient.connect()
+
+          val spark = SparkSession
           .builder
           .appName("Consumer")
           .master("local[*]")
