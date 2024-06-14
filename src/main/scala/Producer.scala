@@ -9,7 +9,7 @@ object Producer {
     //to make the project run on windows you need this folder with winutils.ext and hadoop.dll to be linked
     System.setProperty("hadoop.home.dir", "resources/hadoop")
 
-    val logFile = "source_data/all_data.csv"
+    val logFile = "source_data/all_data_with_users.csv"
 
     val spark = SparkSession.builder
       .appName("Producer")
@@ -30,7 +30,6 @@ object Producer {
     for (i <- 0 to number_of_partitions)
     {
       val to_write = logData.limit(2000)
-      // Écrire le DataFrame actuel au format CSV
       println(s"writing to produced_data/partition_${i}.csv")
       to_write.write
         .format("csv")
