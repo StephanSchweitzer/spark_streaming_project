@@ -9,6 +9,7 @@ import org.json4s._
 import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.write
 import java.util.concurrent.{Executors, ScheduledExecutorService, TimeUnit}
+import scala.collection.mutable
 
 object Consumer {
   implicit val formats: Formats = Serialization.formats(NoTypeHints)
@@ -76,8 +77,11 @@ object Consumer {
     val hateSpeechSchema = new StructType()
       .add("id", IntegerType)
       .add("text", StringType)
-      .add("is_hateful", IntegerType)
       .add("user", StringType)
+      .add("is_hateful", IntegerType)
+
+    // Variable to hold the accumulated DataFrame
+    var accumulatedDF: DataFrame = spark.emptyDataFrame
 
     val csvDF = spark.readStream
       .option("sep", ",")
@@ -91,26 +95,37 @@ object Consumer {
     val query = csvDF.writeStream
       .outputMode("append")
       .foreachBatch { (batchDF: DataFrame, batchId: Long) =>
-        val hatefulMessagesCount = batchDF.filter($"is_hateful" === true).count()
-        val totalMessagesCount = batchDF.count()
-        val hatefulMessagesPercentage = if (totalMessagesCount > 0) hatefulMessagesCount.toDouble / totalMessagesCount * 100 else 0.0
+        // Append the new batch to the accumulated DataFrame
+        accumulatedDF = if (accumulatedDF.isEmpty) {
+          batchDF
+        } else {
+          accumulatedDF.union(batchDF)
+        }
 
-        val frequentHatefulUsers = batchDF.filter($"is_hateful" === true)
+        // Add batch timestamp and total messages received
+        val timestamp = java.time.Instant.now.toString
+        val totalMessages = accumulatedDF.count()
+        val hatefulMessagesCount = accumulatedDF.filter($"is_hateful" === true).count()
+        val hatefulMessagesPercentage = if (totalMessages > 0) hatefulMessagesCount.toDouble / totalMessages * 100 else 0.0
+
+        val frequentHatefulUsers = accumulatedDF.filter($"is_hateful" === true)
           .groupBy("user")
           .count()
           .orderBy($"count".desc)
           .limit(5)
           .collect()
 
-        val mostRecentMessage = batchDF.orderBy($"id".desc).limit(1).collect()
+        val mostRecentMessage = accumulatedDF.orderBy($"id".desc).limit(1).collect()
 
         val dataToSend = Map(
+          "batchTimestamp" -> timestamp,
+          "totalMessages" -> totalMessages,
           "hatefulMessagesPercentage" -> hatefulMessagesPercentage,
           "frequentHatefulUsers" -> frequentHatefulUsers.map(row => row.getAs[String]("user") -> row.getAs[Long]("count")).toMap,
           "mostRecentMessage" -> mostRecentMessage.map(row => row.getAs[String]("text")).headOption.getOrElse("No message")
         )
 
-        // Print the batch data to the terminal
+        // Print the accumulated data to the terminal
         println(s"Batch $batchId data: $dataToSend")
 
         if (isConnected) {
