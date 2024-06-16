@@ -20,7 +20,7 @@ object Consumer {
   @volatile var wsClient: WebSocketClient = _
   @volatile var isConnected: Boolean = false
 
-  case class Message(id: Int, text: String, user: String, is_hateful: Int)
+  case class Message(id: Int, text: String, user: String, is_hateful: Option[Int])
   case class HateSpeechDetectionResponse(id: Int, is_hateful: Int)
 
   def main(args: Array[String]): Unit = {
@@ -126,7 +126,6 @@ object Consumer {
       }
     }
 
-
     val query = csvDF.writeStream
       .outputMode("append")
       .foreachBatch { (batchDF: DataFrame, batchId: Long) =>
@@ -138,7 +137,7 @@ object Consumer {
         val updatedDF = batchDF.as[Message]
           .map { message =>
             detectionResults.find(_.id == message.id) match {
-              case Some(detectionResult) => message.copy(is_hateful = detectionResult.is_hateful)
+              case Some(detectionResult) => message.copy(is_hateful = Some(detectionResult.is_hateful))
               case None => message
             }
           }
