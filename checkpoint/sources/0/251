@@ -1,3 +1,0 @@
-v1
-{"path":"file:///C:/Users/steez/OneDrive/Desktop/spark_streaming/test_for_spark_scala_streaming/produced_data/partition_13/part-00000-340a76eb-de26-40e9-bedd-07353f05a48a-c000.csv","timestamp":1718539114365,"batchId":251}
-{"path":"file:///C:/Users/steez/OneDrive/Desktop/spark_streaming/test_for_spark_scala_streaming/produced_data/partition_14/part-00000-c3d9ab8a-80eb-4d90-aa2b-816a2425d05d-c000.csv","timestamp":1718539115096,"batchId":251}

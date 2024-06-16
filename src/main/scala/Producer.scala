@@ -9,7 +9,7 @@ object Producer {
     // to make the project run on windows you need this folder with winutils.ext and hadoop.dll to be linked
     System.setProperty("hadoop.home.dir", "resources/hadoop")
 
-    val logFile = "source_data/all_data_with_users_hatespeech_0.csv"
+    val logFile = "source_data/corrected_all_data_with_users_hatespeech_0.csv"
 
     val spark = SparkSession.builder
       .appName("Producer")
@@ -18,7 +18,7 @@ object Producer {
 
     spark.sparkContext.setLogLevel("WARN")
 
-    val options = Map("delimiter" -> ",", "header" -> "true")
+    val options = Map("delimiter" -> ",", "header" -> "true", "encoding" -> "UTF-8")
     var logData = spark.read.options(options).csv(logFile).persist()
 
     println("number of lines in my df " + logData.count())
@@ -32,6 +32,8 @@ object Producer {
     while (logData.count() > 0) {
       // Determine the size of the current partition randomly between 50 and 100
       val partitionSize = Random.between(30, 300)
+      //val partitionSize = 3
+
       val toWrite = logData.filter(col("row_num") <= partitionSize)
 
       println(s"writing to produced_data/partition_${partitionIndex}.csv")
@@ -48,7 +50,7 @@ object Producer {
       partitionIndex += 1
 
       // Optional: Add a delay to simulate real-time partitioning
-      // Thread.sleep(1000)
+      Thread.sleep(10000)
 
       // Update row numbers after filtering
       logData = logData.withColumn("row_num", row_number().over(windowSpec))

@@ -101,10 +101,11 @@ object Consumer {
       connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
       connection.setDoOutput(true)
 
-      val cleanedMessages = messages.map(msg => msg.copy(text = msg.text.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "")))
+      val cleanedMessages = messages.map(msg =>
+        msg.copy(text = msg.text.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "").replaceAll("\u00A0", " "))
+      )
       val jsonString = write(cleanedMessages)
 
-      // Ensure the JSON string is properly encoded
       val outputStream = new DataOutputStream(connection.getOutputStream)
       outputStream.write(jsonString.getBytes("UTF-8"))
       outputStream.flush()
