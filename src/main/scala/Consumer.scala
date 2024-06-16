@@ -11,6 +11,12 @@ import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.write
 import java.util.concurrent.{Executors, ScheduledExecutorService, TimeUnit}
 import scala.collection.mutable
+import java.sql.Timestamp
+import java.time.Instant
+
+//COMMENTED TO SHOW HOW
+//import com.mongodb.spark.config._
+//import com.mongodb.spark.MongoSpark
 
 object Consumer {
   implicit val formats: Formats = DefaultFormats
@@ -24,7 +30,7 @@ object Consumer {
   case class HateSpeechDetectionResponse(id: Int, is_hateful: Int)
 
   def main(args: Array[String]): Unit = {
-    val host = "172.22.134.31" // Use the WSL IP address here
+    val host = "172.22.134.31" // WSL IP address
     val port = 3001 // WebSocket server port
 
     Logger.getLogger("org").setLevel(Level.WARN)
@@ -68,6 +74,8 @@ object Consumer {
     val spark = SparkSession.builder()
       .appName("Consumer")
       .master("local[*]")
+      //COMMENTED TO SHOW HOW
+      //.config("spark.mongodb.write.connection.uri", "mongodb://127.0.0.1/messages_db.messages_collection")
       .getOrCreate()
 
     spark.sparkContext.setLogLevel("WARN")
@@ -95,7 +103,8 @@ object Consumer {
 
     // Function to call the hate speech detection API
     def detectHateSpeech(messages: Seq[Message]): Seq[HateSpeechDetectionResponse] = {
-      val url = new URL("http://172.22.134.31:3002/detect")
+      //val url = new URL("http://172.22.134.31:3002/detect")
+      val url = new URL("http://90.60.20.92:8000/classify_batch/")
       val connection = url.openConnection().asInstanceOf[HttpURLConnection]
       connection.setRequestMethod("POST")
       connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
@@ -123,9 +132,16 @@ object Consumer {
         inputStream.close()
         org.json4s.jackson.JsonMethods.parse(response.toString).extract[Seq[HateSpeechDetectionResponse]]
       } else {
+        println("dead")
         Seq.empty[HateSpeechDetectionResponse]
       }
     }
+
+    // Variables to store accumulated statistics
+    var totalHatefulMessages: Long = 0
+    var totalRegularMessages: Long = 0
+    var userHatefulCounts: mutable.Map[String, Int] = mutable.Map()
+    var wordCounts: mutable.Map[String, Int] = mutable.Map()
 
     val query = csvDF.writeStream
       .outputMode("append")
@@ -144,21 +160,74 @@ object Consumer {
           }
           .toDF()
 
+        //COMMENTED TO SHOW HOW
+        // Save updatedDF to MongoDB
+        //        updatedDF.write
+        //          .format("mongodb")
+        //          .mode("append")
+        //          .option("database", "messages_db")
+        //          .option("collection", "messages_collection")
+        //          .save()
+
+        // Update total message counts
+        totalHatefulMessages += updatedDF.filter(col("is_hateful") === 1).count()
+        totalRegularMessages += updatedDF.filter(col("is_hateful") === 0).count()
+
+        // Update user hateful counts
+        updatedDF.groupBy("user").agg(sum("is_hateful").as("hateful_count"))
+          .collect()
+          .foreach(row => {
+            val user = row.getString(0)
+            val hatefulCount = row.getLong(1).toInt
+            userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
+          })
+        val top5Users = userHatefulCounts.toSeq.sortBy(-_._2).take(5)
+
+
+        val totalMessages = totalHatefulMessages + totalRegularMessages
+        val hateSpeechRatio = if (totalMessages > 0) {
+          totalHatefulMessages.toDouble / totalMessages
+        } else {
+          0.0
+        }
+
+        val unwantedWords = Set("je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "le", "la", "les", "un", "une", "des", "sommes", "est",
+        "ont", "ai", "are", "c'est", "it's", "is", "was", "by", "en", "sa", "son", "@url", "ne", "not", "pas",
+        "that", "a", "n'est", "to", "par", "de", "ce", "sont", "a", "them", "it", "aux", "you", "avec", "in", "dans",
+          "@user", "et", "que", "à", "of", "qui", "the", "and", "du", "sur")
+
+        updatedDF.select("text").as[String].collect()
+          .flatMap(_.split("\\s+"))
+          .filterNot(word => unwantedWords.contains(word.toLowerCase))
+          .foreach(word => {
+            wordCounts(word) = wordCounts.getOrElse(word, 0) + 1
+          })
+
+        val top5Words = wordCounts.toSeq.sortBy(-_._2).take(5).toMap
+
         // Prepare messages to be sent to the WebSocket server
         val messagesToSend = updatedDF.as[Message].collect().toSeq
 
-        val dataToSend = Map(
-          "messages" -> messagesToSend
-        )
+        val top5UsersArray = top5Users.map { case (user, count) => Map("user" -> user, "count" -> count) }
+        val top5WordsArray = wordCounts.toSeq.sortBy(-_._2).take(5).map { case (word, count) => Map("word" -> word, "count" -> count) }
 
-        // Print the batch data to the terminal
-        println(s"Batch $batchId data: $dataToSend")
+
+        val dataToSend = Map(
+          "messages" -> messagesToSend,
+          "batchSize" -> messagesToSend.size,
+          "timestamp" -> Timestamp.from(Instant.now()).toString,
+          "totalHatefulMessages" -> totalHatefulMessages,
+          "totalRegularMessages" -> totalRegularMessages,
+          "hateSpeechRatio" -> hateSpeechRatio,
+          "top5Users" -> top5UsersArray,
+          "top5Words" -> top5WordsArray
+        )
 
         if (isConnected) {
           try {
-            // Serialize data to JSON string
             val jsonData = write(dataToSend)
             wsClient.send(jsonData)
+            println("sent data")
           } catch {
             case e: Exception => println("Failed to send batch data: " + e.getMessage)
           }

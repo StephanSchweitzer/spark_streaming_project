@@ -4,6 +4,7 @@ ThisBuild / scalaVersion := "2.13.14"
 lazy val root = (project in file("."))
   .settings(
     name := "SparkStreaming",
+    resolvers += "Confluent" at "https://packages.confluent.io/maven/",
     libraryDependencies ++= Seq(
       "org.apache.spark" %% "spark-core" % "3.3.2",
       "org.apache.spark" %% "spark-streaming" % "3.3.2",
@@ -14,6 +15,6 @@ lazy val root = (project in file("."))
       "org.json4s" %% "json4s-native" % "3.6.7",
       "org.json4s" %% "json4s-jackson" % "3.6.7",
       "org.apache.logging.log4j" % "log4j-core" % "2.14.1",
-      "org.apache.logging.log4j" % "log4j-api" % "2.14.1"
+      "org.apache.logging.log4j" % "log4j-api" % "2.14.1",
     )
   )

@@ -24,15 +24,14 @@ object Producer {
     println("number of lines in my df " + logData.count())
     var partitionIndex = 0
 
-    // Add a dummy partition key and row number column to uniquely identify rows
     logData = logData.withColumn("dummy_partition_key", lit(1))
-    val windowSpec = Window.partitionBy("dummy_partition_key").orderBy("id") // assuming 'id' exists and is unique
+    val windowSpec = Window.partitionBy("dummy_partition_key").orderBy("id")
     logData = logData.withColumn("row_num", row_number().over(windowSpec))
 
     while (logData.count() > 0) {
       // Determine the size of the current partition randomly between 50 and 100
-      val partitionSize = Random.between(30, 300)
-      //val partitionSize = 3
+      //val partitionSize = Random.between(30, 300)
+      val partitionSize = 100
 
       val toWrite = logData.filter(col("row_num") <= partitionSize)
 
