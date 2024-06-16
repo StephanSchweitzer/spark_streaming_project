@@ -1,15 +1,15 @@
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions.col
-import org.apache.spark.sql.functions.count
-
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
+import scala.util.Random
 
 object Producer {
   def main(args: Array[String]): Unit = {
 
-    //to make the project run on windows you need this folder with winutils.ext and hadoop.dll to be linked
+    // to make the project run on windows you need this folder with winutils.ext and hadoop.dll to be linked
     System.setProperty("hadoop.home.dir", "resources/hadoop")
 
-    val logFile = "source_data/all_data_with_users.csv"
+    val logFile = "source_data/all_data_with_users_hatespeech_0.csv"
 
     val spark = SparkSession.builder
       .appName("Producer")
@@ -18,30 +18,40 @@ object Producer {
 
     spark.sparkContext.setLogLevel("WARN")
 
-    val options = Map("delimiter"->",","header"->"true")
+    val options = Map("delimiter" -> ",", "header" -> "true")
     var logData = spark.read.options(options).csv(logFile).persist()
 
     println("number of lines in my df " + logData.count())
-    val number_of_partitions: Int = (logData.count()/2000).toInt
-    println("number of partitions =" + number_of_partitions)
+    var partitionIndex = 0
 
-    // println(number_of_partitions)
+    // Add a dummy partition key and row number column to uniquely identify rows
+    logData = logData.withColumn("dummy_partition_key", lit(1))
+    val windowSpec = Window.partitionBy("dummy_partition_key").orderBy("id") // assuming 'id' exists and is unique
+    logData = logData.withColumn("row_num", row_number().over(windowSpec))
 
-    for (i <- 0 to number_of_partitions)
-    {
-      val to_write = logData.limit(2000)
-      println(s"writing to produced_data/partition_${i}.csv")
-      to_write.write
+    while (logData.count() > 0) {
+      // Determine the size of the current partition randomly between 50 and 100
+      val partitionSize = Random.between(30, 300)
+      val toWrite = logData.filter(col("row_num") <= partitionSize)
+
+      println(s"writing to produced_data/partition_${partitionIndex}.csv")
+      toWrite.drop("row_num", "dummy_partition_key").write
         .format("csv")
-        .options(options)
+        .options(options + ("encoding" -> "UTF-8"))
         .mode("overwrite")
-        .save(s"produced_data/partition_${i}")
+        .save(s"produced_data/partition_${partitionIndex}")
 
-      // Supprimer les 1152 premières lignes du DataFrame
-      logData = logData.except(to_write)
-      to_write.unpersist()
+      // Remove the rows that have been written to the current partition
+      logData = logData.filter(col("row_num") > partitionSize)
       println("remain lines in df " + logData.count())
-      // Thread.sleep(5000)
+
+      partitionIndex += 1
+
+      // Optional: Add a delay to simulate real-time partitioning
+      // Thread.sleep(1000)
+
+      // Update row numbers after filtering
+      logData = logData.withColumn("row_num", row_number().over(windowSpec))
     }
   }
 }

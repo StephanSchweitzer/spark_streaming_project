@@ -12,6 +12,8 @@ lazy val root = (project in file("."))
       "org.java-websocket" % "Java-WebSocket" % "1.5.2",
       "org.json4s" %% "json4s-core" % "3.6.7",
       "org.json4s" %% "json4s-native" % "3.6.7",
-      "org.json4s" %% "json4s-jackson" % "3.6.7"
+      "org.json4s" %% "json4s-jackson" % "3.6.7",
+      "org.apache.logging.log4j" % "log4j-core" % "2.14.1",
+      "org.apache.logging.log4j" % "log4j-api" % "2.14.1"
     )
   )

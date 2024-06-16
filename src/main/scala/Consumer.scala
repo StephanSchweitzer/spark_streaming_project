@@ -4,7 +4,8 @@ import org.apache.spark.sql.types.{StructType, StringType, IntegerType}
 import org.apache.log4j.{Level, Logger}
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
-import java.net.URI
+import java.net.{HttpURLConnection, URL, URI}
+import java.io.{BufferedReader, DataOutputStream, InputStreamReader}
 import org.json4s._
 import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.write
@@ -12,12 +13,15 @@ import java.util.concurrent.{Executors, ScheduledExecutorService, TimeUnit}
 import scala.collection.mutable
 
 object Consumer {
-  implicit val formats: Formats = Serialization.formats(NoTypeHints)
+  implicit val formats: Formats = DefaultFormats
 
   val scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
 
   @volatile var wsClient: WebSocketClient = _
   @volatile var isConnected: Boolean = false
+
+  case class Message(id: Int, text: String, user: String, is_hateful: Int)
+  case class HateSpeechDetectionResponse(id: Int, is_hateful: Int)
 
   def main(args: Array[String]): Unit = {
     val host = "172.22.134.31" // Use the WSL IP address here
@@ -80,9 +84,6 @@ object Consumer {
       .add("user", StringType)
       .add("is_hateful", IntegerType)
 
-    // Variable to hold the accumulated DataFrame
-    var accumulatedDF: DataFrame = spark.emptyDataFrame
-
     val csvDF = spark.readStream
       .option("sep", ",")
       .option("header", "true")
@@ -92,40 +93,65 @@ object Consumer {
 
     import spark.implicits._
 
+    // Function to call the hate speech detection API
+    def detectHateSpeech(messages: Seq[Message]): Seq[HateSpeechDetectionResponse] = {
+      val url = new URL("http://172.22.134.31:3002/detect")
+      val connection = url.openConnection().asInstanceOf[HttpURLConnection]
+      connection.setRequestMethod("POST")
+      connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+      connection.setDoOutput(true)
+
+      val cleanedMessages = messages.map(msg => msg.copy(text = msg.text.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "")))
+      val jsonString = write(cleanedMessages)
+
+      // Ensure the JSON string is properly encoded
+      val outputStream = new DataOutputStream(connection.getOutputStream)
+      outputStream.write(jsonString.getBytes("UTF-8"))
+      outputStream.flush()
+      outputStream.close()
+
+      val responseCode = connection.getResponseCode
+      if (responseCode == HttpURLConnection.HTTP_OK) {
+        val inputStream = new BufferedReader(new InputStreamReader(connection.getInputStream, "UTF-8"))
+        val response = new StringBuffer()
+        var inputLine = inputStream.readLine()
+        while (inputLine != null) {
+          response.append(inputLine)
+          inputLine = inputStream.readLine()
+        }
+        inputStream.close()
+        org.json4s.jackson.JsonMethods.parse(response.toString).extract[Seq[HateSpeechDetectionResponse]]
+      } else {
+        Seq.empty[HateSpeechDetectionResponse]
+      }
+    }
+
+
     val query = csvDF.writeStream
       .outputMode("append")
       .foreachBatch { (batchDF: DataFrame, batchId: Long) =>
-        // Append the new batch to the accumulated DataFrame
-        accumulatedDF = if (accumulatedDF.isEmpty) {
-          batchDF
-        } else {
-          accumulatedDF.union(batchDF)
-        }
+        // Extract messages and call the hate speech detection API
+        val messages = batchDF.as[Message].collect().toSeq
+        val detectionResults = detectHateSpeech(messages)
 
-        // Add batch timestamp and total messages received
-        val timestamp = java.time.Instant.now.toString
-        val totalMessages = accumulatedDF.count()
-        val hatefulMessagesCount = accumulatedDF.filter($"is_hateful" === true).count()
-        val hatefulMessagesPercentage = if (totalMessages > 0) hatefulMessagesCount.toDouble / totalMessages * 100 else 0.0
+        // Update the DataFrame with the hate speech detection results
+        val updatedDF = batchDF.as[Message]
+          .map { message =>
+            detectionResults.find(_.id == message.id) match {
+              case Some(detectionResult) => message.copy(is_hateful = detectionResult.is_hateful)
+              case None => message
+            }
+          }
+          .toDF()
 
-        val frequentHatefulUsers = accumulatedDF.filter($"is_hateful" === true)
-          .groupBy("user")
-          .count()
-          .orderBy($"count".desc)
-          .limit(5)
-          .collect()
-
-        val mostRecentMessage = accumulatedDF.orderBy($"id".desc).limit(1).collect()
+        // Prepare messages to be sent to the WebSocket server
+        val messagesToSend = updatedDF.as[Message].collect().toSeq
 
         val dataToSend = Map(
-          "batchTimestamp" -> timestamp,
-          "totalMessages" -> totalMessages,
-          "hatefulMessagesPercentage" -> hatefulMessagesPercentage,
-          "frequentHatefulUsers" -> frequentHatefulUsers.map(row => row.getAs[String]("user") -> row.getAs[Long]("count")).toMap,
-          "mostRecentMessage" -> mostRecentMessage.map(row => row.getAs[String]("text")).headOption.getOrElse("No message")
+          "messages" -> messagesToSend
         )
 
-        // Print the accumulated data to the terminal
+        // Print the batch data to the terminal
         println(s"Batch $batchId data: $dataToSend")
 
         if (isConnected) {
