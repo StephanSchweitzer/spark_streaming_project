@@ -30,8 +30,8 @@ object Producer {
 
     while (logData.count() > 0) {
       // Determine the size of the current partition randomly between 50 and 100
-      //val partitionSize = Random.between(30, 300)
-      val partitionSize = 100
+      val partitionSize = Random.between(3, 30)
+      //val partitionSize = 100
 
       val toWrite = logData.filter(col("row_num") <= partitionSize)
 

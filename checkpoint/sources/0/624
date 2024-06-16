@@ -1,0 +1,5 @@
+v1
+{"path":"file:///C:/Users/steez/OneDrive/Desktop/spark_streaming/test_for_spark_scala_streaming/produced_data/partition_1/part-00000-108139e7-a84b-4029-895b-f98ab5694ea4-c000.csv","timestamp":1718575820201,"batchId":624}
+{"path":"file:///C:/Users/steez/OneDrive/Desktop/spark_streaming/test_for_spark_scala_streaming/produced_data/partition_2/part-00000-01c10465-1ff9-4345-a69d-3e787191e94a-c000.csv","timestamp":1718575830865,"batchId":624}
+{"path":"file:///C:/Users/steez/OneDrive/Desktop/spark_streaming/test_for_spark_scala_streaming/produced_data/partition_3/part-00000-98e0aeb5-50fe-40eb-b587-e5e47b7bd6ba-c000.csv","timestamp":1718575841430,"batchId":624}
+{"path":"file:///C:/Users/steez/OneDrive/Desktop/spark_streaming/test_for_spark_scala_streaming/produced_data/partition_4/part-00000-93adb217-a426-4943-aa18-f53ce37d7ecb-c000.csv","timestamp":1718575852457,"batchId":624}

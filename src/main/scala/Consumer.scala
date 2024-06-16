@@ -181,10 +181,10 @@ object Consumer {
             val hatefulCount = row.getLong(1).toInt
             userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
           })
-        val top5Users = userHatefulCounts.toSeq.sortBy(-_._2).take(5)
-
+        val top5Users = userHatefulCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
 
         val totalMessages = totalHatefulMessages + totalRegularMessages
+
         val hateSpeechRatio = if (totalMessages > 0) {
           totalHatefulMessages.toDouble / totalMessages
         } else {
@@ -194,7 +194,8 @@ object Consumer {
         val unwantedWords = Set("je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "le", "la", "les", "un", "une", "des", "sommes", "est",
         "ont", "ai", "are", "c'est", "it's", "is", "was", "by", "en", "sa", "son", "@url", "ne", "not", "pas",
         "that", "a", "n'est", "to", "par", "de", "ce", "sont", "a", "them", "it", "aux", "you", "avec", "in", "dans",
-          "@user", "et", "que", "à", "of", "qui", "the", "and", "du", "sur")
+          "@user", "et", "que", "à", "of", "qui", "the", "and", "du", "sur", "si", "if", "au", "aux", "pour", "mais",
+          "for", "but", "plus", "suis", "se", "«", "they", "comme", "have", "ou", "?", "quand")
 
         updatedDF.select("text").as[String].collect()
           .flatMap(_.split("\\s+"))
@@ -203,13 +204,10 @@ object Consumer {
             wordCounts(word) = wordCounts.getOrElse(word, 0) + 1
           })
 
-        val top5Words = wordCounts.toSeq.sortBy(-_._2).take(5).toMap
+        val top10Words = wordCounts.toSeq.sortBy(-_._2).take(10).map { case (word, count) => Map("word" -> word, "count" -> count) }
 
         // Prepare messages to be sent to the WebSocket server
         val messagesToSend = updatedDF.as[Message].collect().toSeq
-
-        val top5UsersArray = top5Users.map { case (user, count) => Map("user" -> user, "count" -> count) }
-        val top5WordsArray = wordCounts.toSeq.sortBy(-_._2).take(5).map { case (word, count) => Map("word" -> word, "count" -> count) }
 
 
         val dataToSend = Map(
@@ -218,9 +216,10 @@ object Consumer {
           "timestamp" -> Timestamp.from(Instant.now()).toString,
           "totalHatefulMessages" -> totalHatefulMessages,
           "totalRegularMessages" -> totalRegularMessages,
+          "totalMessages" -> totalMessages,
           "hateSpeechRatio" -> hateSpeechRatio,
-          "top5Users" -> top5UsersArray,
-          "top5Words" -> top5WordsArray
+          "top5Users" -> top5Users,
+          "top10Words" -> top10Words
         )
 
         if (isConnected) {
