@@ -103,8 +103,8 @@ object Consumer {
 
     // Function to call the hate speech detection API
     def detectHateSpeech(messages: Seq[Message]): Seq[HateSpeechDetectionResponse] = {
-      //val url = new URL("http://172.22.134.31:3002/detect")
-      val url = new URL("http://90.60.20.92:8000/classify_batch/")
+      val url = new URL("http://172.22.134.31:3002/detect")
+      //val url = new URL("http://90.60.20.92:8000/classify_batch/")
       val connection = url.openConnection().asInstanceOf[HttpURLConnection]
       connection.setRequestMethod("POST")
       connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
@@ -142,6 +142,7 @@ object Consumer {
     var totalRegularMessages: Long = 0
     var userHatefulCounts: mutable.Map[String, Int] = mutable.Map()
     var wordCounts: mutable.Map[String, Int] = mutable.Map()
+    var userTotalCounts: mutable.Map[String, Int] = mutable.Map()
 
     val query = csvDF.writeStream
       .outputMode("append")
@@ -174,14 +175,20 @@ object Consumer {
         totalRegularMessages += updatedDF.filter(col("is_hateful") === 0).count()
 
         // Update user hateful counts
-        updatedDF.groupBy("user").agg(sum("is_hateful").as("hateful_count"))
-          .collect()
-          .foreach(row => {
-            val user = row.getString(0)
-            val hatefulCount = row.getLong(1).toInt
-            userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
-          })
+        updatedDF.groupBy("user").agg(
+          sum("is_hateful").as("hateful_count"),
+          count("id").as("total_count")
+        ).collect().foreach(row => {
+          val user = row.getString(0)
+          val hatefulCount = row.getLong(1).toInt
+          val totalCount = row.getLong(2).toInt
+          userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
+          userTotalCounts(user) = userTotalCounts.getOrElse(user, 0) + totalCount
+        })
+
         val top5Users = userHatefulCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
+
+        val top5UsersByTotal = userTotalCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
 
         val totalMessages = totalHatefulMessages + totalRegularMessages
 
@@ -195,7 +202,7 @@ object Consumer {
         "ont", "ai", "are", "c'est", "it's", "is", "was", "by", "en", "sa", "son", "@url", "ne", "not", "pas",
         "that", "a", "n'est", "to", "par", "de", "ce", "sont", "a", "them", "it", "aux", "you", "avec", "in", "dans",
           "@user", "et", "que", "à", "of", "qui", "the", "and", "du", "sur", "si", "if", "au", "aux", "pour", "mais",
-          "for", "but", "plus", "suis", "se", "«", "they", "comme", "have", "ou", "?", "quand")
+          "for", "but", "plus", "suis", "se", "«", "they", "comme", "have", "ou", "?", "quand", "ça", "fait", "c")
 
         updatedDF.select("text").as[String].collect()
           .flatMap(_.split("\\s+"))
@@ -213,13 +220,15 @@ object Consumer {
         val dataToSend = Map(
           "messages" -> messagesToSend,
           "batchSize" -> messagesToSend.size,
+          "hatefulBatchSize" -> updatedDF.filter(col("is_hateful") === 1).count(),
           "timestamp" -> Timestamp.from(Instant.now()).toString,
           "totalHatefulMessages" -> totalHatefulMessages,
           "totalRegularMessages" -> totalRegularMessages,
           "totalMessages" -> totalMessages,
           "hateSpeechRatio" -> hateSpeechRatio,
           "top5Users" -> top5Users,
-          "top10Words" -> top10Words
+          "top10Words" -> top10Words,
+          "top5ActiveUsers" -> top5UsersByTotal
         )
 
         if (isConnected) {
