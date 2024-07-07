@@ -1,22 +1,23 @@
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.{DataFrame, SparkSession, Encoder, Encoders}
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{StructType, StringType, IntegerType}
+import org.apache.spark.sql.types.{StringType, StructType, IntegerType}
 import org.apache.log4j.{Level, Logger}
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
-import java.net.{HttpURLConnection, URL, URI}
+import org.apache.spark.sql.execution.streaming.MemoryStream
+
+import java.net.{HttpURLConnection, URI, URL}
 import java.io.{BufferedReader, DataOutputStream, InputStreamReader}
 import org.json4s._
 import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.write
-import java.util.concurrent.{Executors, ScheduledExecutorService, TimeUnit}
+import org.json4s.jackson.JsonMethods._
+
+import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledExecutorService, TimeUnit}
 import scala.collection.mutable
+import scala.collection.mutable.Queue
 import java.sql.Timestamp
 import java.time.Instant
-
-//COMMENTED TO SHOW HOW
-//import com.mongodb.spark.config._
-//import com.mongodb.spark.MongoSpark
 
 object Consumer {
   implicit val formats: Formats = DefaultFormats
@@ -26,8 +27,11 @@ object Consumer {
   @volatile var wsClient: WebSocketClient = _
   @volatile var isConnected: Boolean = false
 
-  case class Message(id: Int, text: String, user: String, is_hateful: Option[Int])
-  case class HateSpeechDetectionResponse(id: Int, is_hateful: Int)
+  case class Message(`type`: String, id: String, text: String, user: String, is_hateful: Option[Int])
+  case class HateSpeechDetectionResponse(id: String, is_hateful: Int)
+
+  val receivedMessages: ConcurrentLinkedQueue[Message] = new ConcurrentLinkedQueue[Message]()
+  implicit val messageEncoder: Encoder[Message] = Encoders.product[Message]
 
   def main(args: Array[String]): Unit = {
     val host = "172.22.134.31" // WSL IP address
@@ -40,12 +44,15 @@ object Consumer {
       wsClient = new WebSocketClient(new URI(s"ws://$host:$port?clientType=spark")) {
         override def onOpen(handshakedata: ServerHandshake): Unit = {
           println("WebSocket connection opened")
-          //wsClient.send(write("spark"))
           isConnected = true
         }
 
         override def onMessage(message: String): Unit = {
-          println("Received message from server: " + message)
+          val receivedMessage = parse(message).extract[Message]
+          println(receivedMessage)
+          if (receivedMessage.`type` == "inbound") {
+            receivedMessages.add(receivedMessage)
+          }
         }
 
         override def onClose(code: Int, reason: String, remote: Boolean): Unit = {
@@ -72,25 +79,22 @@ object Consumer {
 
     connectToWebSocket()
 
-
-
     val spark = SparkSession.builder()
       .appName("Consumer")
       .master("local[*]")
-      //COMMENTED TO SHOW HOW
-      //.config("spark.mongodb.write.connection.uri", "mongodb://127.0.0.1/messages_db.messages_collection")
       .getOrCreate()
 
     spark.sparkContext.setLogLevel("WARN")
 
     val csvDirectory = "./produced_data"
-    val checkpointLocation = "./checkpoint"
+    //val checkpointLocation = "./checkpoint"
 
     // Create the checkpoint directory if it does not exist
-    new java.io.File(checkpointLocation).mkdirs()
+    //new java.io.File(checkpointLocation).mkdirs()
 
     val hateSpeechSchema = new StructType()
-      .add("id", IntegerType)
+      .add("type", StringType)
+      .add("id", StringType) // Ensure id is String to match the case class
       .add("text", StringType)
       .add("user", StringType)
       .add("is_hateful", IntegerType)
@@ -102,12 +106,32 @@ object Consumer {
       .schema(hateSpeechSchema)
       .csv(csvDirectory)
 
+    val memoryStream = MemoryStream[Message](1, spark.sqlContext)
+    val wsDF = memoryStream.toDF()
+
+    // Periodically poll the queue and add messages to the MemoryStream
+    new Thread(new Runnable {
+      def run(): Unit = {
+        while (true) {
+          if (!receivedMessages.isEmpty) {
+            val messages = new mutable.Queue[Message]()
+            while (!receivedMessages.isEmpty) {
+              messages += receivedMessages.poll()
+            }
+            memoryStream.addData(messages)
+          }
+          Thread.sleep(1000) // Adjust the sleep time as needed
+        }
+      }
+    }).start()
+
+    val unifiedDF = csvDF.unionByName(wsDF)
+
     import spark.implicits._
 
     // Function to call the hate speech detection API
     def detectHateSpeech(messages: Seq[Message]): Seq[HateSpeechDetectionResponse] = {
       val url = new URL("http://172.22.134.31:3002/detect")
-      //val url = new URL("http://90.60.20.92:8000/classify_batch/")
       val connection = url.openConnection().asInstanceOf[HttpURLConnection]
       connection.setRequestMethod("POST")
       connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
@@ -147,7 +171,7 @@ object Consumer {
     var wordCounts: mutable.Map[String, Int] = mutable.Map()
     var userTotalCounts: mutable.Map[String, Int] = mutable.Map()
 
-    val query = csvDF.writeStream
+    val query = unifiedDF.writeStream
       .outputMode("append")
       .foreachBatch { (batchDF: DataFrame, batchId: Long) =>
         // Extract messages and call the hate speech detection API
@@ -164,16 +188,7 @@ object Consumer {
           }
           .toDF()
 
-        //COMMENTED TO SHOW HOW
-        // Save updatedDF to MongoDB
-        //        updatedDF.write
-        //          .format("mongodb")
-        //          .mode("append")
-        //          .option("database", "messages_db")
-        //          .option("collection", "messages_collection")
-        //          .save()
-
-        // Update total message counts
+        // Process updatedDF and update statistics
         totalHatefulMessages += updatedDF.filter(col("is_hateful") === 1).count()
         totalRegularMessages += updatedDF.filter(col("is_hateful") === 0).count()
 
@@ -188,44 +203,28 @@ object Consumer {
           userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
           userTotalCounts(user) = userTotalCounts.getOrElse(user, 0) + totalCount
         })
-        //delete all collects
-        //Look in the spark streaming docs for the functions
 
-        val top5Users: Seq[Map[String, Any]] = userHatefulCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
-        //make sure that you are always working with dataframes
-        //You can do this with the dataframe with a limit 5 instead of a take 5
+        val top5Users = userHatefulCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
         val top5UsersByTotal = userTotalCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
 
         val totalMessages = totalHatefulMessages + totalRegularMessages
-
-        val hateSpeechRatio = if (totalMessages > 0) {
-          totalHatefulMessages.toDouble / totalMessages
-        } else {
-          0.0
-        }
+        val hateSpeechRatio = if (totalMessages > 0) totalHatefulMessages.toDouble / totalMessages else 0.0
 
         val unwantedWords = Set("je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "le", "la", "les", "un", "une", "des", "sommes", "est",
-        "ont", "ai", "are", "c'est", "it's", "is", "was", "by", "en", "sa", "son", "@url", "ne", "not", "pas",
-        "that", "a", "n'est", "to", "par", "de", "ce", "sont", "a", "them", "it", "aux", "you", "avec", "in", "dans",
+          "ont", "ai", "are", "c'est", "it's", "is", "was", "by", "en", "sa", "son", "@url", "ne", "not", "pas",
+          "that", "a", "n'est", "to", "par", "de", "ce", "sont", "a", "them", "it", "aux", "you", "avec", "in", "dans",
           "@user", "et", "que", "à", "of", "qui", "the", "and", "du", "sur", "si", "if", "au", "aux", "pour", "mais",
           "for", "but", "plus", "suis", "se", "«", "they", "comme", "have", "ou", "?", "quand", "ça", "fait", "c", "tout", "contre")
-
-        //updatedDF
-          //.withColumn()
-        // use splits and other spark functions
 
         updatedDF.select("text").as[String].collect()
           .flatMap(_.split("\\s+"))
           .filterNot(word => unwantedWords.contains(word.toLowerCase))
-          .foreach(word => {
-            wordCounts(word) = wordCounts.getOrElse(word, 0) + 1
-          })
+          .foreach(word => wordCounts(word) = wordCounts.getOrElse(word, 0) + 1)
 
         val top10Words = wordCounts.toSeq.sortBy(-_._2).take(10).map { case (word, count) => Map("word" -> word, "count" -> count) }
 
         // Prepare messages to be sent to the WebSocket server
         val messagesToSend = updatedDF.as[Message].collect().toSeq
-
 
         val dataToSend = Map(
           "messages" -> messagesToSend,
@@ -253,7 +252,7 @@ object Consumer {
           println("WebSocket is not connected. Data not sent.")
         }
       }
-      .option("checkpointLocation", checkpointLocation)
+      //.option("checkpointLocation", checkpointLocation)
       .start()
 
     query.awaitTermination()
