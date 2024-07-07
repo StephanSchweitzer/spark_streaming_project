@@ -37,9 +37,10 @@ object Consumer {
     Logger.getLogger("akka").setLevel(Level.WARN)
 
     def connectToWebSocket(): Unit = {
-      wsClient = new WebSocketClient(new URI(s"ws://$host:$port")) {
+      wsClient = new WebSocketClient(new URI(s"ws://$host:$port?clientType=spark")) {
         override def onOpen(handshakedata: ServerHandshake): Unit = {
           println("WebSocket connection opened")
+          //wsClient.send(write("spark"))
           isConnected = true
         }
 
@@ -70,6 +71,8 @@ object Consumer {
     }
 
     connectToWebSocket()
+
+
 
     val spark = SparkSession.builder()
       .appName("Consumer")
@@ -185,9 +188,12 @@ object Consumer {
           userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
           userTotalCounts(user) = userTotalCounts.getOrElse(user, 0) + totalCount
         })
+        //delete all collects
+        //Look in the spark streaming docs for the functions
 
-        val top5Users = userHatefulCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
-
+        val top5Users: Seq[Map[String, Any]] = userHatefulCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
+        //make sure that you are always working with dataframes
+        //You can do this with the dataframe with a limit 5 instead of a take 5
         val top5UsersByTotal = userTotalCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
 
         val totalMessages = totalHatefulMessages + totalRegularMessages
@@ -202,7 +208,11 @@ object Consumer {
         "ont", "ai", "are", "c'est", "it's", "is", "was", "by", "en", "sa", "son", "@url", "ne", "not", "pas",
         "that", "a", "n'est", "to", "par", "de", "ce", "sont", "a", "them", "it", "aux", "you", "avec", "in", "dans",
           "@user", "et", "que", "à", "of", "qui", "the", "and", "du", "sur", "si", "if", "au", "aux", "pour", "mais",
-          "for", "but", "plus", "suis", "se", "«", "they", "comme", "have", "ou", "?", "quand", "ça", "fait", "c")
+          "for", "but", "plus", "suis", "se", "«", "they", "comme", "have", "ou", "?", "quand", "ça", "fait", "c", "tout", "contre")
+
+        //updatedDF
+          //.withColumn()
+        // use splits and other spark functions
 
         updatedDF.select("text").as[String].collect()
           .flatMap(_.split("\\s+"))
