@@ -1,6 +1,6 @@
-import org.apache.spark.sql.{DataFrame, SparkSession, Encoder, Encoders}
+import org.apache.spark.sql.{DataFrame, Encoder, Encoders, SparkSession}
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{StringType, StructType, IntegerType}
+import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructType}
 import org.apache.log4j.{Level, Logger}
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
@@ -82,6 +82,9 @@ object Consumer {
     val spark = SparkSession.builder()
       .appName("Consumer")
       .master("local[*]")
+//      .config("spark.mongodb.input.collection", "messages")
+//      .config("spark.mongodb.output.collection", "messages")
+      .config("spark.jars.packages", "org.mongodb.spark:mongo-spark-connector_2.12:3.0.1")
       .getOrCreate()
 
     spark.sparkContext.setLogLevel("WARN")
@@ -98,6 +101,13 @@ object Consumer {
       .add("text", StringType)
       .add("user", StringType)
       .add("is_hateful", IntegerType)
+
+//    val mongoMessageSchema = new StructType()
+//      .add("id", DoubleType)
+//      .add("is_hateful", IntegerType)
+//      .add("text", StringType)
+//      .add("user", StringType)
+
 
     val csvDF = spark.readStream
       .option("sep", ",")
@@ -120,7 +130,7 @@ object Consumer {
             }
             memoryStream.addData(messages)
           }
-          Thread.sleep(1000) // Adjust the sleep time as needed
+          //Thread.sleep(1000) // Adjust the sleep time as needed
         }
       }
     }).start()
@@ -187,6 +197,24 @@ object Consumer {
             }
           }
           .toDF()
+
+//        updatedDF.writeStream
+//          .format("mongodb")
+//          //.option("checkpointLocation", "/tmp/")
+//          //.option("forceDeleteTempCheckpointLocation", "true")
+//          .option("spark.mongodb.connection.uri", "mongodb://localhost:27017/messages.messages")
+//          .option("spark.mongodb.database", "messages")
+//          .option("spark.mongodb.collection", "messages")
+//          .outputMode("append")
+
+        updatedDF.select("id", "is_hateful", "text", "user")
+          .write
+          .format("mongodb")
+          .mode("append")
+          .option("uri", "mongodb://localhost:27017")
+          .option("spark.mongodb.database", "messages")
+          .option("spark.mongodb.collection", "messages")
+          .save()
 
         // Process updatedDF and update statistics
         totalHatefulMessages += updatedDF.filter(col("is_hateful") === 1).count()

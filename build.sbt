@@ -16,6 +16,6 @@ lazy val root = (project in file("."))
       "org.json4s" %% "json4s-jackson" % "3.6.7",
       "org.apache.logging.log4j" % "log4j-core" % "2.14.1",
       "org.apache.logging.log4j" % "log4j-api" % "2.14.1",
-      
+      "org.mongodb.spark" %% "mongo-spark-connector" % "10.3.0"
     )
   )
