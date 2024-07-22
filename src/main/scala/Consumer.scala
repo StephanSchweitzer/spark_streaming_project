@@ -1,4 +1,4 @@
-import org.apache.spark.sql.{DataFrame, Encoder, Encoders, SparkSession}
+import org.apache.spark.sql.{DataFrame, Dataset, Encoder, Encoders, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructType}
 import org.apache.log4j.{Level, Logger}
@@ -19,6 +19,51 @@ import scala.collection.mutable.Queue
 import java.sql.Timestamp
 import java.time.Instant
 
+case class Message(`type`: String, id: String, text: String, user: String, is_hateful: Option[Int])
+//case class messageForClassifiction(id: String, text: String, user: String, is_hateful: Option[Int])
+case class HateSpeechDetectionResponse(id: String, is_hateful: Int)
+
+
+object HateSpeechDetector {
+  // Function signature for detectHateSpeech
+  def detectHateSpeech(messages: Seq[Message]): Seq[HateSpeechDetectionResponse] = {
+    implicit val formats = DefaultFormats
+    val url = new URL("http://172.22.134.31:3002/detect")
+    //val url = new URL("https://deepwoke.com/predict/classify_batch")
+    val connection = url.openConnection().asInstanceOf[HttpURLConnection]
+    connection.setRequestMethod("POST")
+    connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+    connection.setDoOutput(true)
+
+    val cleanedMessages = messages.map(msg =>
+      msg.copy(text = msg.text.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "").replaceAll("\u00A0", " "))
+    )
+    val jsonString = write(cleanedMessages)
+
+    val outputStream = new DataOutputStream(connection.getOutputStream)
+    outputStream.write(jsonString.getBytes("UTF-8"))
+    outputStream.flush()
+    outputStream.close()
+
+    val responseCode = connection.getResponseCode
+    if (responseCode == HttpURLConnection.HTTP_OK) {
+      val inputStream = new BufferedReader(new InputStreamReader(connection.getInputStream, "UTF-8"))
+      val response = new StringBuffer()
+      var inputLine = inputStream.readLine()
+      while (inputLine != null) {
+        response.append(inputLine)
+        inputLine = inputStream.readLine()
+      }
+      inputStream.close()
+      parse(response.toString).extract[Seq[HateSpeechDetectionResponse]]
+    } else {
+      println("Error response from server: " + responseCode)
+      Seq.empty[HateSpeechDetectionResponse]
+    }
+  }
+}
+
+
 object Consumer {
   implicit val formats: Formats = DefaultFormats
 
@@ -27,8 +72,6 @@ object Consumer {
   @volatile var wsClient: WebSocketClient = _
   @volatile var isConnected: Boolean = false
 
-  case class Message(`type`: String, id: String, text: String, user: String, is_hateful: Option[Int])
-  case class HateSpeechDetectionResponse(id: String, is_hateful: Int)
 
   val receivedMessages: ConcurrentLinkedQueue[Message] = new ConcurrentLinkedQueue[Message]()
   implicit val messageEncoder: Encoder[Message] = Encoders.product[Message]
@@ -82,8 +125,8 @@ object Consumer {
     val spark = SparkSession.builder()
       .appName("Consumer")
       .master("local[*]")
-//      .config("spark.mongodb.input.collection", "messages")
-//      .config("spark.mongodb.output.collection", "messages")
+      //      .config("spark.mongodb.input.collection", "messages")
+      //      .config("spark.mongodb.output.collection", "messages")
       .config("spark.jars.packages", "org.mongodb.spark:mongo-spark-connector_2.12:3.0.1")
       .getOrCreate()
 
@@ -102,11 +145,11 @@ object Consumer {
       .add("user", StringType)
       .add("is_hateful", IntegerType)
 
-//    val mongoMessageSchema = new StructType()
-//      .add("id", DoubleType)
-//      .add("is_hateful", IntegerType)
-//      .add("text", StringType)
-//      .add("user", StringType)
+    //    val mongoMessageSchema = new StructType()
+    //      .add("id", DoubleType)
+    //      .add("is_hateful", IntegerType)
+    //      .add("text", StringType)
+    //      .add("user", StringType)
 
 
     val csvDF = spark.readStream
@@ -139,40 +182,6 @@ object Consumer {
 
     import spark.implicits._
 
-    // Function to call the hate speech detection API
-    def detectHateSpeech(messages: Seq[Message]): Seq[HateSpeechDetectionResponse] = {
-      val url = new URL("http://172.22.134.31:3002/detect")
-      val connection = url.openConnection().asInstanceOf[HttpURLConnection]
-      connection.setRequestMethod("POST")
-      connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-      connection.setDoOutput(true)
-
-      val cleanedMessages = messages.map(msg =>
-        msg.copy(text = msg.text.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "").replaceAll("\u00A0", " "))
-      )
-      val jsonString = write(cleanedMessages)
-
-      val outputStream = new DataOutputStream(connection.getOutputStream)
-      outputStream.write(jsonString.getBytes("UTF-8"))
-      outputStream.flush()
-      outputStream.close()
-
-      val responseCode = connection.getResponseCode
-      if (responseCode == HttpURLConnection.HTTP_OK) {
-        val inputStream = new BufferedReader(new InputStreamReader(connection.getInputStream, "UTF-8"))
-        val response = new StringBuffer()
-        var inputLine = inputStream.readLine()
-        while (inputLine != null) {
-          response.append(inputLine)
-          inputLine = inputStream.readLine()
-        }
-        inputStream.close()
-        org.json4s.jackson.JsonMethods.parse(response.toString).extract[Seq[HateSpeechDetectionResponse]]
-      } else {
-        println("dead")
-        Seq.empty[HateSpeechDetectionResponse]
-      }
-    }
 
     // Variables to store accumulated statistics
     var totalHatefulMessages: Long = 0
@@ -185,27 +194,31 @@ object Consumer {
       .outputMode("append")
       .foreachBatch { (batchDF: DataFrame, batchId: Long) =>
         // Extract messages and call the hate speech detection API
-        val messages = batchDF.as[Message].collect().toSeq
-        val detectionResults = detectHateSpeech(messages)
 
-        // Update the DataFrame with the hate speech detection results
-        val updatedDF = batchDF.as[Message]
-          .map { message =>
-            detectionResults.find(_.id == message.id) match {
-              case Some(detectionResult) => message.copy(is_hateful = Some(detectionResult.is_hateful))
-              case None => message
-            }
-          }
-          .toDF()
+          //OLD CODE
+//        val messages = batchDF.as[Message].collect().toSeq
+//        val detectionResults = detectHateSpeech(messages)
 
-//        updatedDF.writeStream
-//          .format("mongodb")
-//          //.option("checkpointLocation", "/tmp/")
-//          //.option("forceDeleteTempCheckpointLocation", "true")
-//          .option("spark.mongodb.connection.uri", "mongodb://localhost:27017/messages.messages")
-//          .option("spark.mongodb.database", "messages")
-//          .option("spark.mongodb.collection", "messages")
-//          .outputMode("append")
+        val messagesDS: Dataset[Message] = batchDF.as[Message]
+        val detectionResultsDS = messagesDS.mapPartitions { messagesIterator =>
+          val messagesSeq = messagesIterator.toSeq
+          val detectionResults = HateSpeechDetector.detectHateSpeech(messagesSeq)
+          detectionResults.iterator
+        }(Encoders.product[HateSpeechDetectionResponse]).toDF()
+
+        val detectionResults = detectionResultsDS.withColumnRenamed("is_hateful", "detected_is_hateful")
+        val updatedDF = messagesDS.toDF()
+          .join(detectionResults, Seq("id"), "left_outer")
+          .withColumn("is_hateful", coalesce(col("detected_is_hateful"), col("is_hateful")))
+
+        //        updatedDF.writeStream
+        //          .format("mongodb")
+        //          //.option("checkpointLocation", "/tmp/")
+        //          //.option("forceDeleteTempCheckpointLocation", "true")
+        //          .option("spark.mongodb.connection.uri", "mongodb://localhost:27017/messages.messages")
+        //          .option("spark.mongodb.database", "messages")
+        //          .option("spark.mongodb.collection", "messages")
+        //          .outputMode("append")
 
         updatedDF.select("id", "is_hateful", "text", "user")
           .write

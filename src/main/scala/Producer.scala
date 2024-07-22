@@ -30,7 +30,9 @@ object Producer {
 
     while (logData.count() > 0) {
       // Determine the size of the current partition randomly between 50 and 100
-      val partitionSize = Random.between(500, 1000)
+      //val partitionSize = Random.between(500, 1000)
+      val partitionSize = Random.between(5, 10)
+
       //val partitionSize = 100
 
       val toWrite = logData.filter(col("row_num") <= partitionSize)
@@ -49,7 +51,7 @@ object Producer {
       partitionIndex += 1
 
       // Optional: Add a delay to simulate real-time partitioning
-      //Thread.sleep(10000)
+      Thread.sleep(10000)
 
       // Update row numbers after filtering
       logData = logData.withColumn("row_num", row_number().over(windowSpec))
