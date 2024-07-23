@@ -20,9 +20,9 @@ import java.sql.Timestamp
 import java.time.Instant
 
 case class Message(`type`: String, id: String, text: String, user: String, is_hateful: Option[Int])
-//case class messageForClassifiction(id: String, text: String, user: String, is_hateful: Option[Int])
 case class HateSpeechDetectionResponse(id: String, is_hateful: Int)
-
+case class UserAggregations(user: String, hateful_count: Long, total_count: Long)
+case class WordCount(word: String, count: Long)
 
 object HateSpeechDetector {
   implicit val formats = DefaultFormats
@@ -149,13 +149,6 @@ object Consumer {
       .add("user", StringType)
       .add("is_hateful", IntegerType)
 
-    //    val mongoMessageSchema = new StructType()
-    //      .add("id", DoubleType)
-    //      .add("is_hateful", IntegerType)
-    //      .add("text", StringType)
-    //      .add("user", StringType)
-
-
     val csvDF = spark.readStream
       .option("sep", ",")
       .option("header", "true")
@@ -188,11 +181,9 @@ object Consumer {
 
 
     // Variables to store accumulated statistics
-    var totalHatefulMessages: Long = 0
-    var totalRegularMessages: Long = 0
-    var userHatefulCounts: mutable.Map[String, Int] = mutable.Map()
-    var wordCounts: mutable.Map[String, Int] = mutable.Map()
-    var userTotalCounts: mutable.Map[String, Int] = mutable.Map()
+    var userAggregationsDF: DataFrame = spark.emptyDataset[UserAggregations].toDF()
+    var wordCountDF: DataFrame = spark.emptyDataset[WordCount].toDF()
+
 
     val query = unifiedDF.writeStream
       .outputMode("append")
@@ -218,56 +209,83 @@ object Consumer {
           .option("spark.mongodb.collection", "messages")
           .save()
 
-        // Process updatedDF and update statistics
-        totalHatefulMessages += updatedDF.filter(col("is_hateful") === 1).count()
-        totalRegularMessages += updatedDF.filter(col("is_hateful") === 0).count()
+        val userAggBatchDF = updatedDF.groupBy("user")
+          .agg(
+            sum(when(col("is_hateful") === 1, 1).otherwise(0)).as("hateful_count"),
+            count("id").as("total_count")
+          )
+          .as[UserAggregations]
+          .toDF()
 
-        // Update user hateful counts
-        updatedDF.groupBy("user").agg(
-          sum("is_hateful").as("hateful_count"),
-          count("id").as("total_count")
-        ).collect().foreach(row => {
-          val user = row.getString(0)
-          val hatefulCount = row.getLong(1).toInt
-          val totalCount = row.getLong(2).toInt
-          userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
-          userTotalCounts(user) = userTotalCounts.getOrElse(user, 0) + totalCount
-        })
-
-        val top5Users = userHatefulCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
-        val top5UsersByTotal = userTotalCounts.toSeq.sortBy(-_._2).take(5).map { case (user, count) => Map("user" -> user, "count" -> count) }
-
-        val totalMessages = totalHatefulMessages + totalRegularMessages
-        val hateSpeechRatio = if (totalMessages > 0) totalHatefulMessages.toDouble / totalMessages else 0.0
-
-        val unwantedWords = Set("je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "le", "la", "les", "un", "une", "des", "sommes", "est",
+        val unwantedWords: Set[String] = Set("je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "le", "la", "les", "un", "une", "des", "sommes", "est",
           "ont", "ai", "are", "c'est", "it's", "is", "was", "by", "en", "sa", "son", "@url", "ne", "not", "pas",
           "that", "a", "n'est", "to", "par", "de", "ce", "sont", "a", "them", "it", "aux", "you", "avec", "in", "dans",
           "@user", "et", "que", "à", "of", "qui", "the", "and", "du", "sur", "si", "if", "au", "aux", "pour", "mais",
           "for", "but", "plus", "suis", "se", "«", "they", "comme", "have", "ou", "?", "quand", "ça", "fait", "c", "tout", "contre")
 
-        updatedDF.select("text").as[String].collect()
-          .flatMap(_.split("\\s+"))
-          .filterNot(word => unwantedWords.contains(word.toLowerCase))
-          .foreach(word => wordCounts(word) = wordCounts.getOrElse(word, 0) + 1)
 
-        val top10Words = wordCounts.toSeq.sortBy(-_._2).take(10).map { case (word, count) => Map("word" -> word, "count" -> count) }
+        val wordCountBatchDF = updatedDF.select("text").as[String]
+          .flatMap(_.split("\\s+"))
+          .filter(word => !unwantedWords.contains(word.toLowerCase))
+          .groupBy("value")
+          .count()
+          .select($"value".as("word"), $"count".as("count"))
+          .as[WordCount]
+          .toDF()
+
+        userAggregationsDF = userAggregationsDF.union(userAggBatchDF)
+          .groupBy("user")
+          .agg(
+            sum("hateful_count").as("hateful_count"),
+            sum("total_count").as("total_count")
+          )
+          .as[UserAggregations]
+          .toDF()
+
+        wordCountDF = wordCountDF.union(wordCountBatchDF)
+          .groupBy("word")
+          .agg(sum("count").as("count"))
+          .as[WordCount]
+          .toDF()
+
+        val top5Users = userAggregationsDF.orderBy(desc("hateful_count")).limit(5)
+        val top10Words = wordCountDF.orderBy(desc("count")).limit(10)
+
+
+//        // Update user hateful counts
+//        updatedDF.groupBy("user").agg(
+//          sum("is_hateful").as("hateful_count"),
+//          count("id").as("total_count")
+//        ).collect().foreach(row => {
+//          val user = row.getString(0)
+//          val hatefulCount = row.getLong(1).toInt
+//          val totalCount = row.getLong(2).toInt
+//          userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
+//          userTotalCounts(user) = userTotalCounts.getOrElse(user, 0) + totalCount
+//        })
+
+//        val totalMessages = totalHatefulMessages + totalRegularMessages
+//        val hateSpeechRatio = if (totalMessages > 0) totalHatefulMessages.toDouble / totalMessages else 0.0
+//
+//        updatedDF.select("text").as[String].collect()
+//          .flatMap(_.split("\\s+"))
+//          .filterNot(word => unwantedWords.contains(word.toLowerCase))
+//          .foreach(word => wordCounts(word) = wordCounts.getOrElse(word, 0) + 1)
 
         // Prepare messages to be sent to the WebSocket server
-        val messagesToSend = updatedDF.as[Message].collect().toSeq
+        //val messagesToSend = updatedDF.as[Message].collect().toSeq
 
+        // Prepare data to send to WebSocket
         val dataToSend = Map(
-          "messages" -> messagesToSend,
-          "batchSize" -> messagesToSend.size,
+          "batchSize" -> updatedDF.count(),
           "hatefulBatchSize" -> updatedDF.filter(col("is_hateful") === 1).count(),
           "timestamp" -> Timestamp.from(Instant.now()).toString,
-          "totalHatefulMessages" -> totalHatefulMessages,
-          "totalRegularMessages" -> totalRegularMessages,
-          "totalMessages" -> totalMessages,
-          "hateSpeechRatio" -> hateSpeechRatio,
-          "top5Users" -> top5Users,
-          "top10Words" -> top10Words,
-          "top5ActiveUsers" -> top5UsersByTotal
+          "totalHatefulMessages" -> userAggregationsDF.agg(sum("hateful_count")).as[Long].first(),
+          "totalRegularMessages" -> (userAggregationsDF.agg(sum("total_count")).as[Long].first() - userAggregationsDF.agg(sum("hateful_count")).as[Long].first()),
+          "totalMessages" -> userAggregationsDF.agg(sum("total_count")).as[Long].first(),
+          "hateSpeechRatio" -> (userAggregationsDF.agg(sum("hateful_count")).as[Long].first().toDouble / userAggregationsDF.agg(sum("total_count")).as[Long].first()),
+          "top5Users" -> top5Users.as[UserAggregations].collect().map { case UserAggregations(user, hateful_count, total_count) => Map("user" -> user, "hateful_count" -> hateful_count, "total_count" -> total_count) },
+          "top10Words" -> top10Words.as[WordCount].collect().map { case WordCount(word, count) => Map("word" -> word, "count" -> count) }
         )
 
         if (isConnected) {
