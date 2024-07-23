@@ -1,21 +1,19 @@
 import org.apache.spark.sql.{DataFrame, Dataset, Encoder, Encoders, SparkSession}
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 import org.apache.log4j.{Level, Logger}
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import org.apache.spark.sql.execution.streaming.MemoryStream
 
 import java.net.{HttpURLConnection, URI, URL}
-import java.io.{BufferedReader, DataOutputStream, InputStreamReader, OutputStreamWriter}
+import java.io.OutputStreamWriter
 import org.json4s._
-import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.write
 import org.json4s.jackson.JsonMethods._
 
 import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledExecutorService, TimeUnit}
 import scala.collection.mutable
-import scala.collection.mutable.Queue
 import java.sql.Timestamp
 import java.time.Instant
 
@@ -40,17 +38,13 @@ object HateSpeechDetector {
         msg.copy(text = msg.text.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "").replaceAll("\u00A0", " "))
       }
 
-      // Convert cleanedMessages to JSON
       val messagesJson = write(cleanedMessages)
-
-      // Send request
       val outputStream = connection.getOutputStream
       val writer = new OutputStreamWriter(outputStream, "UTF-8")
       writer.write(messagesJson)
       writer.flush()
       writer.close()
 
-      // Get response code
       val responseCode = connection.getResponseCode
 
       if (responseCode == HttpURLConnection.HTTP_OK) {
@@ -129,8 +123,6 @@ object Consumer {
     val spark = SparkSession.builder()
       .appName("Consumer")
       .master("local[*]")
-      //      .config("spark.mongodb.input.collection", "messages")
-      //      .config("spark.mongodb.output.collection", "messages")
       .config("spark.jars.packages", "org.mongodb.spark:mongo-spark-connector_2.12:3.0.1")
       .getOrCreate()
 
@@ -144,7 +136,7 @@ object Consumer {
 
     val hateSpeechSchema = new StructType()
       .add("type", StringType)
-      .add("id", StringType) // Ensure id is String to match the case class
+      .add("id", StringType)
       .add("text", StringType)
       .add("user", StringType)
       .add("is_hateful", IntegerType)
@@ -159,7 +151,6 @@ object Consumer {
     val memoryStream = MemoryStream[Message](1, spark.sqlContext)
     val wsDF = memoryStream.toDF()
 
-    // Periodically poll the queue and add messages to the MemoryStream
     new Thread(new Runnable {
       def run(): Unit = {
         while (true) {
@@ -211,20 +202,17 @@ object Consumer {
           .mode("append")
           .save()
 
-        val userAggBatchDF = updatedDF.groupBy("user")
-          .agg(
-            sum(when(col("is_hateful") === 1, 1).otherwise(0)).as("hateful_count"),
-            count("id").as("total_count")
-          )
-          .as[UserAggregations]
-          .toDF()
-
         val unwantedWords: Set[String] = Set("je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "le", "la", "les", "un", "une", "des", "sommes", "est",
           "ont", "ai", "are", "c'est", "it's", "is", "was", "by", "en", "sa", "son", "@url", "ne", "not", "pas",
           "that", "a", "n'est", "to", "par", "de", "ce", "sont", "a", "them", "it", "aux", "you", "avec", "in", "dans",
           "@user", "et", "que", "à", "of", "qui", "the", "and", "du", "sur", "si", "if", "au", "aux", "pour", "mais",
           "for", "but", "plus", "suis", "se", "«", "they", "comme", "have", "ou", "?", "quand", "ça", "fait", "c", "tout", "contre")
 
+        val userAggBatchDF = updatedDF.groupBy("user")
+          .agg(
+            sum(when(col("is_hateful") === 1, 1).otherwise(0)).as("hateful_count"),
+            count("id").as("total_count")
+          )
 
         val wordCountBatchDF = updatedDF.select("text").as[String]
           .flatMap(_.split("\\s+"))
@@ -232,53 +220,22 @@ object Consumer {
           .groupBy("value")
           .count()
           .select($"value".as("word"), $"count".as("count"))
-          .as[WordCount]
-          .toDF()
 
-        userAggregationsDF = userAggregationsDF.union(userAggBatchDF)
+        userAggregationsDF = userAggregationsDF.unionByName(userAggBatchDF)
           .groupBy("user")
           .agg(
             sum("hateful_count").as("hateful_count"),
             sum("total_count").as("total_count")
           )
-          .as[UserAggregations]
-          .toDF()
 
-        wordCountDF = wordCountDF.union(wordCountBatchDF)
+        wordCountDF = wordCountDF.unionByName(wordCountBatchDF)
           .groupBy("word")
           .agg(sum("count").as("count"))
-          .as[WordCount]
-          .toDF()
 
         val top5Users = userAggregationsDF.orderBy(desc("hateful_count")).limit(5)
         val top5ActiveUsers = userAggregationsDF.orderBy(desc("total_count")).limit(5)
         val top10Words = wordCountDF.orderBy(desc("count")).limit(10)
 
-
-//        // Update user hateful counts
-//        updatedDF.groupBy("user").agg(
-//          sum("is_hateful").as("hateful_count"),
-//          count("id").as("total_count")
-//        ).collect().foreach(row => {
-//          val user = row.getString(0)
-//          val hatefulCount = row.getLong(1).toInt
-//          val totalCount = row.getLong(2).toInt
-//          userHatefulCounts(user) = userHatefulCounts.getOrElse(user, 0) + hatefulCount
-//          userTotalCounts(user) = userTotalCounts.getOrElse(user, 0) + totalCount
-//        })
-
-//        val totalMessages = totalHatefulMessages + totalRegularMessages
-//        val hateSpeechRatio = if (totalMessages > 0) totalHatefulMessages.toDouble / totalMessages else 0.0
-//
-//        updatedDF.select("text").as[String].collect()
-//          .flatMap(_.split("\\s+"))
-//          .filterNot(word => unwantedWords.contains(word.toLowerCase))
-//          .foreach(word => wordCounts(word) = wordCounts.getOrElse(word, 0) + 1)
-
-        // Prepare messages to be sent to the WebSocket server
-        //val messagesToSend = updatedDF.as[Message].collect().toSeq
-
-        // Prepare data to send to WebSocket
         val dataToSend = Map(
           "batchSize" -> updatedDF.count(),
           "hatefulBatchSize" -> updatedDF.filter(col("is_hateful") === 1).count(),
@@ -303,7 +260,6 @@ object Consumer {
         } else {
           println("WebSocket is not connected. Data not sent.")
         }
-        //updatedDF.unpersist()
       }
       //.option("checkpointLocation", checkpointLocation)
       .start()
