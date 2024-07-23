@@ -7,7 +7,7 @@ import org.java_websocket.handshake.ServerHandshake
 import org.apache.spark.sql.execution.streaming.MemoryStream
 
 import java.net.{HttpURLConnection, URI, URL}
-import java.io.{BufferedReader, DataOutputStream, InputStreamReader}
+import java.io.{BufferedReader, DataOutputStream, InputStreamReader, OutputStreamWriter}
 import org.json4s._
 import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.write
@@ -25,40 +25,44 @@ case class HateSpeechDetectionResponse(id: String, is_hateful: Int)
 
 
 object HateSpeechDetector {
-  // Function signature for detectHateSpeech
-  def detectHateSpeech(messages: Seq[Message]): Seq[HateSpeechDetectionResponse] = {
-    implicit val formats = DefaultFormats
+  implicit val formats = DefaultFormats
+
+  def detectHateSpeech(messagesIterator: Iterator[Message], chunkSize: Int): Iterator[HateSpeechDetectionResponse] = {
     val url = new URL("http://172.22.134.31:3002/detect")
     //val url = new URL("https://deepwoke.com/predict/classify_batch")
-    val connection = url.openConnection().asInstanceOf[HttpURLConnection]
-    connection.setRequestMethod("POST")
-    connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-    connection.setDoOutput(true)
+    messagesIterator.grouped(chunkSize).flatMap { messagesChunk =>
+      val connection = url.openConnection().asInstanceOf[HttpURLConnection]
+      connection.setRequestMethod("POST")
+      connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+      connection.setDoOutput(true)
 
-    val cleanedMessages = messages.map(msg =>
-      msg.copy(text = msg.text.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "").replaceAll("\u00A0", " "))
-    )
-    val jsonString = write(cleanedMessages)
-
-    val outputStream = new DataOutputStream(connection.getOutputStream)
-    outputStream.write(jsonString.getBytes("UTF-8"))
-    outputStream.flush()
-    outputStream.close()
-
-    val responseCode = connection.getResponseCode
-    if (responseCode == HttpURLConnection.HTTP_OK) {
-      val inputStream = new BufferedReader(new InputStreamReader(connection.getInputStream, "UTF-8"))
-      val response = new StringBuffer()
-      var inputLine = inputStream.readLine()
-      while (inputLine != null) {
-        response.append(inputLine)
-        inputLine = inputStream.readLine()
+      val cleanedMessages = messagesChunk.map { msg =>
+        msg.copy(text = msg.text.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "").replaceAll("\u00A0", " "))
       }
-      inputStream.close()
-      parse(response.toString).extract[Seq[HateSpeechDetectionResponse]]
-    } else {
-      println("Error response from server: " + responseCode)
-      Seq.empty[HateSpeechDetectionResponse]
+
+      // Convert cleanedMessages to JSON
+      val messagesJson = write(cleanedMessages)
+
+      // Send request
+      val outputStream = connection.getOutputStream
+      val writer = new OutputStreamWriter(outputStream, "UTF-8")
+      writer.write(messagesJson)
+      writer.flush()
+      writer.close()
+
+      // Get response code
+      val responseCode = connection.getResponseCode
+
+      if (responseCode == HttpURLConnection.HTTP_OK) {
+        val responseStream = connection.getInputStream
+        val responseJson = scala.io.Source.fromInputStream(responseStream).mkString
+        responseStream.close()
+
+        parse(responseJson).extract[Seq[HateSpeechDetectionResponse]].iterator
+      } else {
+        println("Error response from server: " + responseCode)
+        messagesChunk.map(msg => HateSpeechDetectionResponse(msg.id, 0)).iterator // Default responses in case of error
+      }
     }
   }
 }
@@ -193,32 +197,17 @@ object Consumer {
     val query = unifiedDF.writeStream
       .outputMode("append")
       .foreachBatch { (batchDF: DataFrame, batchId: Long) =>
-        // Extract messages and call the hate speech detection API
-
-          //OLD CODE
-//        val messages = batchDF.as[Message].collect().toSeq
-//        val detectionResults = detectHateSpeech(messages)
-
         val messagesDS: Dataset[Message] = batchDF.as[Message]
+        val chunkSize = 1000
+
         val detectionResultsDS = messagesDS.mapPartitions { messagesIterator =>
-          val messagesSeq = messagesIterator.toSeq
-          val detectionResults = HateSpeechDetector.detectHateSpeech(messagesSeq)
-          detectionResults.iterator
+          HateSpeechDetector.detectHateSpeech(messagesIterator, chunkSize)
         }(Encoders.product[HateSpeechDetectionResponse]).toDF()
 
         val detectionResults = detectionResultsDS.withColumnRenamed("is_hateful", "detected_is_hateful")
         val updatedDF = messagesDS.toDF()
           .join(detectionResults, Seq("id"), "left_outer")
           .withColumn("is_hateful", coalesce(col("detected_is_hateful"), col("is_hateful")))
-
-        //        updatedDF.writeStream
-        //          .format("mongodb")
-        //          //.option("checkpointLocation", "/tmp/")
-        //          //.option("forceDeleteTempCheckpointLocation", "true")
-        //          .option("spark.mongodb.connection.uri", "mongodb://localhost:27017/messages.messages")
-        //          .option("spark.mongodb.database", "messages")
-        //          .option("spark.mongodb.collection", "messages")
-        //          .outputMode("append")
 
         updatedDF.select("id", "is_hateful", "text", "user")
           .write
