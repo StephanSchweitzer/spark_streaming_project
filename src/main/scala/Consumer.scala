@@ -200,13 +200,15 @@ object Consumer {
           .join(detectionResults, Seq("id"), "left_outer")
           .withColumn("is_hateful", coalesce(col("detected_is_hateful"), col("is_hateful")))
 
+
         updatedDF.select("id", "is_hateful", "text", "user")
           .write
           .format("mongodb")
-          .mode("append")
           .option("uri", "mongodb://localhost:27017")
-          .option("spark.mongodb.database", "messages")
-          .option("spark.mongodb.collection", "messages")
+          .option("database", "messages")
+          .option("collection", "messages")
+          .option("ordered", "false")
+          .mode("append")
           .save()
 
         val userAggBatchDF = updatedDF.groupBy("user")
@@ -249,6 +251,7 @@ object Consumer {
           .toDF()
 
         val top5Users = userAggregationsDF.orderBy(desc("hateful_count")).limit(5)
+        val top5ActiveUsers = userAggregationsDF.orderBy(desc("total_count")).limit(5)
         val top10Words = wordCountDF.orderBy(desc("count")).limit(10)
 
 
@@ -285,7 +288,8 @@ object Consumer {
           "totalMessages" -> userAggregationsDF.agg(sum("total_count")).as[Long].first(),
           "hateSpeechRatio" -> (userAggregationsDF.agg(sum("hateful_count")).as[Long].first().toDouble / userAggregationsDF.agg(sum("total_count")).as[Long].first()),
           "top5Users" -> top5Users.as[UserAggregations].collect().map { case UserAggregations(user, hateful_count, total_count) => Map("user" -> user, "hateful_count" -> hateful_count, "total_count" -> total_count) },
-          "top10Words" -> top10Words.as[WordCount].collect().map { case WordCount(word, count) => Map("word" -> word, "count" -> count) }
+          "top10Words" -> top10Words.as[WordCount].collect().map { case WordCount(word, count) => Map("word" -> word, "count" -> count) },
+          "top5ActiveUsers" -> top5ActiveUsers.as[UserAggregations].collect().map { case UserAggregations(user, hateful_count, total_count) => Map("user" -> user, "total_count" -> total_count) }
         )
 
         if (isConnected) {
@@ -299,6 +303,7 @@ object Consumer {
         } else {
           println("WebSocket is not connected. Data not sent.")
         }
+        //updatedDF.unpersist()
       }
       //.option("checkpointLocation", checkpointLocation)
       .start()

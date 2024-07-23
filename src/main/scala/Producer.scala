@@ -31,7 +31,7 @@ object Producer {
     while (logData.count() > 0) {
       // Determine the size of the current partition randomly between 50 and 100
       //val partitionSize = Random.between(500, 1000)
-      val partitionSize = Random.between(100, 200)
+      val partitionSize = Random.between(1000, 2000)
 
       //val partitionSize = 100
 
